@@ -1,0 +1,100 @@
+---
+version: 2.1
+
+# TODO: try the autotag stuff as an inline orb
+
+executors:
+  go-build:
+    docker:
+      - image: circleci/golang:1.12
+commands:
+  save-go-mod-cache:
+    steps:
+      - save_cache:
+          key: v1-dependencies-{{ checksum "go.mod" }}
+          paths:
+            - /go/pkg/mod
+
+  restore-go-mod-cache:
+    steps:
+      - restore_cache:
+          keys:
+            - v1-dependencies-{{ checksum "go.mod" }}
+
+  save-workspace:
+    steps:
+      - persist_to_workspace:
+          root: .
+          paths:
+            - ./
+
+  restore-workspace:
+    steps:
+      - attach_workspace:
+          at: .
+
+jobs:
+  test:
+    executor: go-build
+    steps:
+      - checkout
+      - restore-go-mod-cache
+      # commands
+      - run: go test -v .
+      # persist
+      - save-go-mod-cache
+      - save-workspace
+
+  release:
+    executor: go-build
+    steps:
+      - restore-workspace
+      # commands
+      - run:
+          name: install autotag
+          command: |
+            curl -s https://api.github.com/repos/pantheon-systems/autotag/releases/latest | \
+              grep browser_download | \
+              grep -i linux | \
+              cut -d '"' -f 4 | \
+              xargs curl -o ~/autotag -L \
+              && chmod 755 ~/autotag
+      - run:
+          name: install github cli
+          command: |
+            curl -sL https://github.com/github/hub/releases/download/v2.12.3/hub-linux-amd64-2.12.3.tgz | \
+              tar --strip-components=2 --wildcards -xzvf - '*/bin/hub' \
+              && mv ./hub ~/
+#      - run: ~/autotag
+      - run:
+          name: generate changelog based on commits since last release tag
+          command: |
+            git log $(git describe --tags --abbrev=0)..HEAD --pretty=oneline --abbrev-commit --no-decorate --no-color >/tmp/changelog
+      - run:
+          name: release next tag on github
+          command: |
+            next_tag="v$(~/autotag -n)"
+
+            cat \<<EOF >/tmp/release-desc
+            $next_tag
+
+            $(cat ./tmp-changelog)
+            EOF
+
+            ~/hub release create -F /tmp/release-desc "$next_tag"
+
+# TODO: next steps: try to do non-invasive releases. maybe do them as drafts here. or create a separate repo to experiment with, like an example lib. which might be good for a blog/doc anyway
+
+workflows:
+  version: 2
+  primary:
+    jobs:
+      - test
+      - release:
+          requires:
+            - test
+          filters:
+            branches:
+              only:
+                - master
+                - release-test
