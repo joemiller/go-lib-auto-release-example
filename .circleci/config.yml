@@ -1,12 +1,77 @@
 ---
 version: 2.1
 
-# TODO: try the autotag stuff as an inline orb
-
 executors:
   go-build:
     docker:
       - image: circleci/golang:1.12
+
+# TODO: try the autotag stuff as an inline orb
+orbs:
+  autorelease:
+    executors:
+      go-build:
+        docker:
+          - image: circleci/golang:1.12
+
+    commands:
+      install-autotag:
+        steps:
+          - run:
+              name: install autotag to ~/autotag
+              command: |
+                if [[ $(command -v autotag) ]]; then
+                  echo "autotag already installed"
+                else
+                  curl -s https://api.github.com/repos/pantheon-systems/autotag/releases/latest | \
+                    grep browser_download | \
+                    grep -i linux | \
+                    cut -d '"' -f 4 | \
+                    xargs curl -o ~/autotag -L \
+                    && chmod 755 ~/autotag
+                fi
+      install-hub:
+        steps:
+          - run:
+              name: install github cli to ~/hub
+              command: |
+                curl -sL https://github.com/github/hub/releases/download/v2.12.3/hub-linux-amd64-2.12.3.tgz | \
+                  tar --strip-components=2 --wildcards -xzvf - '*/bin/hub' \
+                  && mv ./hub ~/
+      generate-changelog:
+        steps:
+          - run:
+              name: generate changelog
+              command: |
+                git log $(git describe --tags --abbrev=0)..HEAD --pretty=oneline --abbrev-commit --no-decorate --no-color >/tmp/changelog
+      release:
+        steps:
+          - run:
+              name: push release to github
+              command: |
+                next_tag="v$(~/autotag -n)"
+
+                cat \<<EOF >/tmp/release-desc
+                $next_tag
+
+                $(cat /tmp/changelog)
+                EOF
+
+                ~/hub release create -F /tmp/release-desc "$next_tag"
+
+    jobs:
+      release:
+        # TODO: can executor be a parameter ?
+        executor: go-build
+        steps:
+          - checkout
+          - install-autotag
+          - install-hub
+          - generate-changelog
+          - release
+
+# TODO: try the autotag stuff as an inline orb
+
 commands:
   save-go-mod-cache:
     steps:
@@ -90,7 +155,7 @@ workflows:
   primary:
     jobs:
       - test
-      - release:
+      - autorelease/release:
           requires:
             - test
           filters:
@@ -98,3 +163,12 @@ workflows:
               only:
                 - master
                 - release-test
+
+      # - release:
+      #     requires:
+      #       - test
+      #     filters:
+      #       branches:
+      #         only:
+      #           - master
+      #           - release-test
